@@ -345,6 +345,13 @@ body::before{content:'';position:fixed;inset:0;background-image:url("data:image/
 
 <div class="toast" id="toast"></div>
 
+<!-- Apple Health Modal -->
+<div id="health-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:1000;align-items:center;justify-content:center;padding:20px">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:24px;max-width:360px;width:100%;position:relative">
+    <div id="health-modal-body"></div>
+  </div>
+</div>
+
 <script>
 // ============================================================
 //  SWAP LIBRARY
@@ -807,12 +814,83 @@ function finishSession(){
   if(cs<ts*0.5&&!confirm('Only '+cs+'/'+ts+' sets done. Finish?'))return;
   const setData=day.exercises.map((ex,ei)=>({name:ex.name,sets:Array.from({length:ex.sets},(_,si)=>({weight:parseFloat(document.getElementById('w-'+ei+'-'+si)?.value)||0,reps:parseInt(document.getElementById('r-'+ei+'-'+si)?.value)||0,rpe:parseInt(document.getElementById('rpe-set-'+ei+'-'+si)?.value)||sessionRPEs[ei]||0,done:setsDone[ei][si]}))}));
   for(const [eiStr,area] of Object.entries(sessionPainFlags)){const ex=day.exercises[parseInt(eiStr)];if(ex&&area!=='None')state.painFlags[ex.name]={active:true,area,date:new Date().toISOString()};}
-  const session={date:new Date().toISOString(),dayIdx:currentDay,dayName:day.name,exerciseCount:day.exercises.length,notes,duration:Math.round((new Date()-sessionStart)/60000),setsCompleted:cs,totalSets:ts,setData};
+  const duration=Math.round((new Date()-sessionStart)/60000)||50;
+  const session={date:new Date().toISOString(),dayIdx:currentDay,dayName:day.name,exerciseCount:day.exercises.length,notes,duration,setsCompleted:cs,totalSets:ts,setData};
   state.sessions.push(session);
   const newPRs=checkNewPRs(session);session.newPRs=newPRs;
   saveState();cancelSession();updateDashboard();
   if(newPRs.length)showToast('&#127942; '+newPRs.length+' new PR'+(newPRs.length>1?'s':'')+' set!');
   else showToast('Session saved! '+cs+'/'+ts+' sets done.');
+  // Show Apple Health modal
+  showHealthModal(session);
+}
+
+function showHealthModal(session){
+  const allSets=session.setData?session.setData.flatMap(e=>e.sets||[]).filter(x=>x.rpe>0):[];
+  const avgRPE=allSets.length?(allSets.reduce((a,x)=>a+x.rpe,0)/allSets.length).toFixed(1):7;
+  const dur=session.duration||50;
+  // Calorie estimate: weight 193lbs, RPE-scaled
+  const rpeNum=parseFloat(avgRPE);
+  const calPerMin=rpeNum>=9?9:rpeNum>=8?7.5:rpeNum>=7?7:6;
+  const cals=Math.round(calPerMin*dur);
+  document.getElementById('health-modal-body').innerHTML=`
+    <div style="text-align:center;margin-bottom:18px">
+      <div style="font-size:36px;margin-bottom:6px">❤️‍🔥</div>
+      <div style="font-family:'Bebas Neue',sans-serif;font-size:22px;color:var(--accent)">${session.dayName}</div>
+      <div style="font-size:11px;color:var(--text3);font-family:'DM Mono',monospace;margin-top:2px">Ready to log to Apple Health</div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:20px">
+      <div style="background:var(--surface2);border-radius:8px;padding:12px;text-align:center">
+        <div style="font-family:'Bebas Neue',sans-serif;font-size:26px;color:var(--accent3)">${dur}</div>
+        <div style="font-size:10px;color:var(--text3);font-family:'DM Mono',monospace">MIN</div>
+      </div>
+      <div style="background:var(--surface2);border-radius:8px;padding:12px;text-align:center">
+        <div style="font-family:'Bebas Neue',sans-serif;font-size:26px;color:var(--accent2)">${avgRPE}</div>
+        <div style="font-size:10px;color:var(--text3);font-family:'DM Mono',monospace">AVG RPE</div>
+      </div>
+      <div style="background:var(--surface2);border-radius:8px;padding:12px;text-align:center">
+        <div style="font-family:'Bebas Neue',sans-serif;font-size:26px;color:var(--red)">${cals}</div>
+        <div style="font-size:10px;color:var(--text3);font-family:'DM Mono',monospace">CAL EST</div>
+      </div>
+    </div>
+    <p style="font-size:11px;color:var(--text3);line-height:1.6;margin-bottom:16px;text-align:center">Tap below to open the <strong style="color:var(--text)">FORGE Log</strong> Shortcut in the Shortcuts app. It will pre-fill with these values and log your workout to Apple Health.</p>
+    <div style="margin-bottom:10px">
+      <button class="btn btn-primary" style="width:100%;font-size:13px;padding:13px" onclick="openHealthShortcut(${dur},${avgRPE},${cals},'${session.dayName}')">
+        &#9889; Open Shortcuts App
+      </button>
+    </div>
+    <div style="margin-bottom:10px">
+      <button class="btn btn-secondary" style="width:100%;font-size:11px" onclick="copyHealthSummary(${dur},${avgRPE},${cals},'${session.dayName}')">
+        &#128203; Copy Summary to Clipboard
+      </button>
+    </div>
+    <button class="btn btn-secondary" style="width:100%;font-size:11px" onclick="closeHealthModal()">Skip for now</button>
+    <div id="health-copy-confirm" style="display:none;text-align:center;margin-top:10px;font-size:11px;color:var(--green);font-family:'DM Mono',monospace">&#10003; Copied! Paste into Apple Health or Notes.</div>
+  `;
+  document.getElementById('health-modal').style.display='flex';
+}
+
+function openHealthShortcut(dur,rpe,cals,dayName){
+  // Deep link to Shortcuts app — opens FORGE Log shortcut if installed
+  // Passes session data as text so user can confirm before logging
+  const text=encodeURIComponent(`FORGE Session\nDay: ${dayName}\nDuration: ${dur} min\nAvg RPE: ${rpe}\nCalories: ${cals} kcal\nType: Traditional Strength Training`);
+  // Try Shortcuts deep link first, fall back to shortcuts:// scheme
+  window.location.href=`shortcuts://run-shortcut?name=FORGE%20Log&input=text&text=${text}`;
+  setTimeout(()=>{
+    // If shortcut not installed, open Shortcuts app directly
+    window.location.href='shortcuts://';
+  },1200);
+}
+
+function copyHealthSummary(dur,rpe,cals,dayName){
+  const text=`FORGE Workout — ${dayName}\nDuration: ${dur} min\nAvg RPE: ${rpe}/10\nEst. Calories: ${cals} kcal\nType: Traditional Strength Training\n${new Date().toLocaleDateString()}`;
+  navigator.clipboard.writeText(text).then(()=>{
+    document.getElementById('health-copy-confirm').style.display='block';
+  }).catch(()=>{showToast('Copy failed — try manually');});
+}
+
+function closeHealthModal(){
+  document.getElementById('health-modal').style.display='none';
 }
 function cancelSession(){document.getElementById('day-selector-view').style.display='block';document.getElementById('session-view').style.display='none';currentDay=null;document.getElementById('session-notes').value='';}
 
